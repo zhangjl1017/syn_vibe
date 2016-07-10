@@ -1,0 +1,689 @@
+#include "synopsis.h"
+//#include <io.h>
+#include "vibeBackgroundOwn.h"
+#include"stdio.h"
+
+#ifndef DEBUG
+#define DEBUG
+#endif
+
+
+
+
+/**
+ *背景建模
+ */
+void bgModeling(const char * videoFilePath, const int frame_num_used,
+		IplImage * bgImg, const int size1, const int size2, const int sigma1,
+		const int sigma2) {
+//声明
+	IplImage * frame = NULL;
+	CvMat * frameMat = NULL;
+	CvMat * bgMat = NULL;
+	CvCapture* pCapture = NULL;
+	int frame_no = 0;
+	pCapture = cvCaptureFromFile(videoFilePath); //自己选取一段avi视频
+	if (!pCapture) {
+		printf("Unable to open video file for background modeling!\n");
+		return;
+	}
+	if (bgImg != NULL) { //非空需先清空*bgImg指向的内存
+		cvReleaseImage(&bgImg);
+	}
+	printf("Background Modeling...\n");
+//逐帧读取视频
+	while (frame_no < frame_num_used) {
+		frame = cvQueryFrame(pCapture);
+		frame_no += 1;
+		if (frame_no == 1) {
+//初始化
+			bgImg = cvCreateImage(cvSize(frame->width, frame->height),
+					frame->depth, frame->nChannels);
+			cvCopy(frame, bgImg);
+			frameMat = cvCreateMat(frame->height, frame->width, CV_32FC3);
+			bgMat = cvCreateMat((bgImg)->height, (bgImg)->width, CV_32FC3);
+			cvConvert(frame, frameMat);
+			cvConvert(bgImg, bgMat);
+			continue;
+		}
+//视频帧IplImage转CvMat
+		cvConvert(frame, frameMat);
+//高斯滤波先，以平滑图像
+		cvSmooth(frame, frame, CV_GAUSSIAN, size1, size2, sigma1, sigma2);
+//滑动平均更新背景(求平均)
+		cvRunningAvg(frameMat, bgMat, (double) 1 / frame_num_used);
+	}
+	cvConvert(bgMat, bgImg);
+	printf("Background Model has been achieved!\n");
+//释放内存
+	cvReleaseCapture(&pCapture);
+	cvReleaseMat(&frameMat);
+	cvReleaseMat(&bgMat);
+}
+/**
+ *基本数据单元构造函数
+ */
+tube::tube(CvRect rect, int t, IplImage * img) :
+		position(rect), t_sec(t) {
+	target = cvCreateImage(cvSize(img->width, img->height), img->depth,
+			img->nChannels);
+	cvCopy(img, target);
+}
+/**
+ *基本数据单元析构函数
+ */
+tube::~tube() {
+	cvReleaseImage(&target);
+}
+/**
+ *提取前景图像 - 二值图像
+ */
+void getFgImage_1(const IplImage * frame, IplImage * fgImg,
+		const IplImage * bgImg) {
+	if (frame == NULL || fgImg == NULL || bgImg == NULL) {
+		printf(
+				"Fail: There exists NULL input. Fail to get Foreground Image!\n");
+		return;
+	}
+	if (frame->nChannels != 1 || fgImg->nChannels != 1
+			|| bgImg->nChannels != 1) {
+		printf(
+				"Fail: All input image should be grayscale!\nframe channel:%d\nfgImg channel:%d\nbgImg channel:%d\n",
+				frame->nChannels, fgImg->nChannels, bgImg->nChannels);
+		return;
+	}
+	vibeModel* vbM = NULL;
+	unsigned char* image_data = NULL; // image data in current image
+	unsigned char* output_data = NULL; // image data after background subtraction
+	output_data = (unsigned char *) malloc(
+			frame->width * frame->height * frame->nChannels);
+	IplImage *fgImg_1 = cvCreateImage(cvGetSize(frame), frame->depth, 1);
+
+//    cvNamedWindow("FG",1);
+//    cvNamedWindow("ORI",1);
+	// bgImg = cvCreateImage(cvGetSize(frame), frame->depth, 3);
+
+//    cvConvert(frame, frameMat);
+//    cvConvert(fgImg, fgMat);
+//    cvConvert(bgImg, bgMat);
+
+	image_data = (unsigned char *) frame->imageData;
+	if (!vbM)
+		vbM = VibeModelInit(frame->width, frame->height, frame->nChannels,
+				image_data);
+	//background->imageData=(char *) frame->imageData-(char*)foreground->imageData;///////////////////
+	//
+	VibeModelUpdate(vbM, image_data, output_data);
+	fgImg_1->imageData = (char *) output_data;
+	///////////////////////
+	// cvShowImage("bg_samples_2",background);//背景
+	//open and close operation
+	cvMorphologyEx(fgImg, fgImg, 0, 0, CV_MOP_CLOSE, 1);
+	cvMorphologyEx(fgImg, fgImg, 0, 0, CV_MOP_OPEN, 1);
+//    cvReleaseMat(&frameMat);
+//    cvReleaseMat(&fgMat);
+//    cvReleaseMat(&bgMat);
+}
+
+void getFgImage(const IplImage * frame, IplImage * fgImg,
+		const IplImage * bgImg, const int threshold) {
+	if (frame == NULL || fgImg == NULL || bgImg == NULL) {
+		printf(
+				"Fail: There exists NULL input. Fail to get Foreground Image!\n");
+		return;
+	}
+	if (frame->nChannels != 1 || fgImg->nChannels != 1
+			|| bgImg->nChannels != 1) {
+		printf(
+				"Fail: All input image should be grayscale!\nframe channel:%d\nfgImg channel:%d\nbgImg channel:%d\n",
+				frame->nChannels, fgImg->nChannels, bgImg->nChannels);
+		return;
+	}
+	CvMat * frameMat = cvCreateMat(frame->height, frame->width, CV_32FC1);
+	CvMat * fgMat = cvCreateMat(fgImg->height, fgImg->width, CV_32FC1);
+	CvMat * bgMat = cvCreateMat(bgImg->height, bgImg->width, CV_32FC1);
+	cvConvert(frame, frameMat);
+	cvConvert(fgImg, fgMat);
+	cvConvert(bgImg, bgMat);
+	cvSmooth(frameMat, frameMat, CV_GAUSSIAN, 5, 5, 4, 4); //高斯滤波先，以平滑图像
+	cvAbsDiff(frameMat, bgMat, fgMat); //当前帧跟背景图相减(求背景差并取绝对值)
+	cvThreshold(fgMat, fgImg, threshold, 255, CV_THRESH_BINARY); //二值化前景图(这里采用特定阈值进行二值化)
+	//进行形态学滤波，去掉噪音
+	cvErode(fgImg, fgImg, 0, 1);
+	cvDilate(fgImg, fgImg, 0, 1);
+	//释放矩阵内存
+	cvReleaseMat(&frameMat);
+	cvReleaseMat(&fgMat);
+	cvReleaseMat(&bgMat);
+}
+/**
+ *判断两矩形是否重叠
+ */
+bool isOverlap(const CvRect & a, const CvRect & b) {
+	const CvRect * l_rect = &a, *r_rect = &b;
+	if (a.x > b.x) {
+		const CvRect * tmp = l_rect;
+		l_rect = r_rect;
+		r_rect = tmp;
+	}
+	if (l_rect->width < r_rect->x - l_rect->x)
+		return false;
+	else if (l_rect->y <= r_rect->y && l_rect->height >= r_rect->y - l_rect->y)
+		return true;
+	else if (l_rect->y > r_rect->y && r_rect->height >= l_rect->y - r_rect->y)
+		return true;
+	else
+		return false;
+}
+/**
+ *前景位置矩形块合并 - 减少单元数
+ */
+void mergeRects(list<CvRect> & rects) {
+	int x = 0, y = 0, width = 0, height = 0;    //临时变量
+	for (list<CvRect>::iterator i = rects.begin(); i != rects.end();) {
+		bool merged = false;    //多引入一个变量判断i是否被merge非常有用！
+		list<CvRect>::iterator j = i;
+		for (j++; j != rects.end(); j++) {
+			if (isOverlap(*i, *j)) {
+				if (i->x < j->x) {
+					x = i->x;
+					width = max(j->x - i->x + j->width, i->width);
+				} else {
+					x = j->x;
+					width = max(i->x - j->x + i->width, j->width);
+				}
+				if (i->y < j->y) {
+					y = i->y;
+					height = max(j->y - i->y + j->height, i->height);
+				} else {
+					y = j->y;
+					height = max(i->y - j->y + i->height, j->height);
+				}
+				//合并
+				j->x = x;
+				j->y = y;
+				j->width = width;
+				j->height = height;
+				i = rects.erase(i);    //删除被合并项。注意：删除前者（i）更新后者（j）！
+				merged = true;
+			}
+		}
+		if (!merged)
+			i++;
+	}
+}
+/**
+ *判断是否属于同一跟踪目标
+ */
+bool isSameObj(const CvRect & a, const CvRect & b,
+		const float category_factor) {
+	const CvRect * l_rect = &a, *r_rect = &b;
+	if (a.x > b.x) {
+		const CvRect * tmp = l_rect;
+		l_rect = r_rect;
+		r_rect = tmp;
+	}
+	int area = 0;    //记录重叠区域面积
+	if (l_rect->width <= r_rect->x - l_rect->x)
+		return false;
+	else if (l_rect->y <= r_rect->y && l_rect->height > r_rect->y - l_rect->y) {
+		area = (l_rect->x + l_rect->width - r_rect->x)
+				* (l_rect->y + l_rect->height - r_rect->y);
+		if (area > category_factor * a.width * a.height
+				|| area > category_factor * b.width * b.height)
+			return true;
+		else
+			return false;
+	} else if (l_rect->y >= r_rect->y
+			&& r_rect->height > l_rect->y - r_rect->y) {
+		area = (l_rect->x + l_rect->width - r_rect->x)
+				* (r_rect->y + r_rect->height - l_rect->y);
+		if (area > category_factor * a.width * a.height
+				|| area > category_factor * b.width * b.height)
+			return true;
+		else
+			return false;
+	} else
+		return false;
+}
+/**
+ *前景跟踪并建立数据库结构 - Kernel
+ */
+void buildTrackDB(const char * videoFilePath, const IplImage * bgImg,
+		list<list<tube *> > & database,
+		//bgImg是背景
+		const int threshold, const int min_area, const int obj_num,
+		const float extend_factor,  //extend_factor不知道是什么
+		const float category_factor, const bool save_mode) {//category_factor不知道是什么
+	if (bgImg == NULL) {
+		printf("Fail: NULL background image!\n");
+		return;
+	}
+	if (bgImg->nChannels != 1) {
+		printf("Fail: Background image should be grayscale!\n");
+		return;
+	}
+	if (!database.empty()) {
+		printf("Fail: Database is not empty!\n");
+		return;
+	}
+	if (extend_factor < 0 || extend_factor > 1 || category_factor < 0
+			|| category_factor > 1) {
+		printf(
+				"Fail: Invalid use of params!\n0 <= extend_factor <= 1\n0 <= category_factor <= 1\n");
+		return;
+	}
+	CvCapture * capture = cvCaptureFromFile(videoFilePath);
+	if (!capture) {
+		printf("Fail: Unable to open video file!\n");
+		return;
+	}
+	int fps = (int) cvGetCaptureProperty(capture, CV_CAP_PROP_FPS),
+			frame_count = (int) cvGetCaptureProperty(capture,
+					CV_CAP_PROP_FRAME_COUNT), frame_id = 0;
+	CvSize size = cvSize(  //矩形
+			(int) cvGetCaptureProperty(capture, CV_CAP_PROP_FRAME_WIDTH),
+			(int) cvGetCaptureProperty(capture, CV_CAP_PROP_FRAME_HEIGHT));
+	IplImage * frame = NULL, *frame_gray = cvCreateImage(size, IPL_DEPTH_8U, 1),
+			*fgImg = cvCreateImage(size, IPL_DEPTH_8U, 1);
+	//以下变量用于轮廓查找函数
+	CvMemStorage * storage = cvCreateMemStorage();//内存存储器是一个可用来存储诸如序列，轮廓，图形,子划分等动态增长数据结构的底层结构。它是由一系列以同等大小的内存块构成，
+	CvSeq * first_contour = NULL;
+	IplImage * tmp = cvCreateImage(size, IPL_DEPTH_8U, 1);
+	int find_num = 0, extend_w = 0, extend_h = 0;
+	list<CvRect> rects; //存放找到的前景块位置
+	char time[10]; //存放时间
+	int m = 0, s = 0; //分、秒
+	printf("Build track database...\n");
+	//ok!!!!!!!!!!!!!!!!!!!!!!!
+
+	vibeModel* vbM = NULL;	//vibe指针
+	unsigned char* image_data = NULL; // image data in current image
+	unsigned char* output_data = NULL; // image data after background subtraction
+
+	frame = cvQueryFrame(capture);
+	int width = frame->width;
+	int height = frame->height;
+	int nChannels = frame->nChannels;
+	output_data = (unsigned char *) malloc(width * height * nChannels);
+	IplImage *foreground = cvCreateImage(cvGetSize(frame), frame->depth, 1);
+	foreground->imageData = (char *) output_data;
+	while (frame = cvQueryFrame(capture)) {
+		//cvCvtColor(frame, frame_gray, CV_BGR2GRAY); //帧图像彩色转灰度
+
+		image_data = (unsigned char *) frame->imageData;
+		// getFgImage(frame_gray, fgImg, bgImg, threshold); //帧差法获取前景图像
+
+		// getFgImage_1(frame_gray, fgImg, bgImg);//vibe获得前景图像
+
+		//getFgImage_1 开始
+
+		//image_data = (unsigned char *) frame->imageData;
+		if (!vbM)
+			vbM = VibeModelInit(frame->width, frame->height, frame->nChannels,
+					image_data);	//背景粘贴
+		//background->imageData=(char *) frame->imageData-(char*)foreground->imageData;///////////////////
+		//
+		VibeModelUpdate(vbM, image_data, output_data);
+		cvMorphologyEx(foreground, foreground, 0, 0, CV_MOP_CLOSE, 1);
+		cvMorphologyEx(foreground, fgImg, 0, 0, CV_MOP_OPEN, 1);
+		//getFgImage_1 开结束
+		/**/
+		cvCopy(fgImg, tmp);
+		find_num = cvFindContours(tmp, storage, &first_contour,
+				sizeof(CvContour), CV_RETR_CCOMP); //检测前景轮廓
+		/**!!!Be careful with the param below!!!**/
+//        if(find_num > (obj_num * 10) || first_contour == NULL || frame == NULL){
+//            cvClearMemStorage(storage);
+//            continue;
+//        }
+		//printf("frame:%d\tfind contour num:%d\n", frame_id, find_num);
+		//contour analysis
+		for (CvSeq* c = first_contour; c != NULL; c = c->h_next) {
+			int left = 0x7fffffff, right = 0, top = 0x7fffffff, bottom = 0;
+			int contourWidth = 0, contourHeight = 0;
+			for (int j = 0; j < c->total; j++) {
+				CvPoint * pt = (CvPoint *) cvGetSeqElem(c, j);
+				if (pt->x < left)
+					left = pt->x;
+				if (pt->x > right)
+					right = pt->x;
+				if (pt->y < top)
+					top = pt->y;
+				if (pt->y > bottom)
+					bottom = pt->y;
+			}
+			contourWidth = right - left + 1;
+			contourHeight = bottom - top + 1;
+			if (contourWidth * contourHeight < min_area)
+				continue;
+			extend_w = extend_factor * contourWidth;
+			extend_h = extend_factor * contourHeight;
+			left = (left >= extend_w ? left - extend_w : 0);
+			top = (top >= extend_h ? top - extend_h : 0);
+			right = (
+					(right + extend_w) < size.width ?
+							right + extend_w : size.width - 1);
+			bottom = (
+					(bottom + extend_h) < size.height ?
+							bottom + extend_h : size.height - 1);
+			rects.push_back(
+					cvRect(left, top, right - left + 1, bottom - top + 1));
+		}
+
+		for (list<CvRect>::iterator i = rects.begin(); i != rects.end();i++) {
+			for (list<CvRect>::iterator j = rects.begin(); j != rects.end();j++) {
+				if (isSameObj((*i), (*j), category_factor)) { //判断是同一跟踪目标
+
+			/*
+			 * 检查每条轨迹的最大矩形框并赋值给所有人
+			 */
+					if (i->height*i->width < j->height*j->width && \
+							i->height < j->height && \
+							i->width < j->width)
+					{
+						i->height = j->height;
+						i->width = j->width;
+						i->x -= (j->width-i->width)/2;
+						i->y -= (j->height-i->height)/2;
+						if (i->x<0) {
+							i->width += i->x;
+							i->x = 0;
+						}
+						if ((i->x+i->width)>frame->width){
+							i->width=frame->width-i->x;
+						}
+						if (i->y<0){
+							i->height += i->y;
+							i->y = 0;
+						}
+						if ((i->y+i->height) > frame->height){
+							i->height = frame->height - i->y;
+						}
+#ifdef DEBUG
+						if (i->height<0) cout << "-------------------height<0-------------------" <<endl;
+						if (i->width<0) cout << "-------------------height<0-------------------" <<endl;
+						cout << i->height << " " << i->width << " " << i->x << " " << i->y << " "<< frame->width << " " << frame->height << endl;
+#endif
+
+					}else if (i->height*i->width > j->height*j->width && \
+							i->height > j->height && \
+							i->width > j->width)
+					{
+						j->height = i->height;
+						j->width = i->width;
+						j->x -= (i->width-j->width)/2;
+						j->y -= (i->height-j->height)/2;
+						if (j->x<0) {
+							j->width += j->x;
+							j->x = 0;
+						}
+						if ((j->x+j->width)>frame->width){
+							j->width=frame->width-j->x;
+						}
+						if (j->y<0){
+							j->height += j->y;
+							j->y = 0;
+						}
+						if ((j->y+j->height) > frame->height){
+							j->height = frame->height - j->y;
+						}
+#ifdef DEBUG
+						if (j->height<0) cout << "-------------------height<0-------------------" <<endl;
+						if (j->width<0) cout << "-------------------height<0-------------------" <<endl;
+						cout << j->height << " " << j->width << " " << j->x << " " << j->y << " "<< frame->width << " " << frame->height << endl;
+#endif
+					}
+				}
+			}
+		}
+
+		mergeRects(rects); //merge rects进一步筛选
+		for (list<CvRect>::iterator iter = rects.begin(); iter != rects.end();
+				iter++) {
+			cvRectangle(frame, cvPoint(iter->x, iter->y),
+					cvPoint(iter->x + iter->width, iter->y + iter->height),
+					cvScalar(0, 255, 0), 1); //在frame中标示出最后保存的方框区域
+			m = (frame_id / FPS) / 60;
+			s = (frame_id / FPS) % 60;
+			sprintf(time, "%02d:%02d", m, s);
+			CvFont font;
+
+			cvInitFont(&font, CV_FONT_HERSHEY_COMPLEX, 0.5, 0.5, 1, 2, 8);
+			cvPutText(frame, time,
+					cvPoint(iter->x + iter->width / 3,
+							iter->y + iter->height / 3), &font,
+					cvScalar(0, 0, 255)); //在frame中标记时间
+			cvSetImageROI(frame, *iter);
+			IplImage * target = cvCreateImage(
+					cvSize((*iter).width, (*iter).height), IPL_DEPTH_8U, 3);
+			cvCopy(frame, target);
+			bool added = false; //判断通过下面的循环是否将tube加入到database
+			for (list<list<tube *> >::iterator i = database.begin();
+					i != database.end(); i++) {
+				list<tube *>::iterator j = i->end(); //如果 *i 为空则应该到 database 末端了，循环应已终止
+				j--; //找到list<tube *>最后一个元素，及该目标的最新跟踪数据
+				if (isSameObj(*iter, (*j)->position, category_factor)) { //判断是同一跟踪目标
+
+			/*
+			 * 检查每条轨迹的最大矩形框并赋值给所有人
+			 */
+				//	cout << "IplImage.origin" << frame->origin << endl;
+				 	j = i->end();
+					j--;
+					if (iter->height*iter->width < ((*j)->position).height*((*j)->position).width && \
+							iter->height < ((*j)->position).height && \
+							iter->width < ((*j)->position).width)
+					{
+					//	iter->height = ((*j)->position).height;
+					//	iter->width = ((*j)->position).width;
+					//	iter->x -= (((*j)->position).width-iter->width)/2;
+					//	iter->y -= (((*j)->position).height-iter->height)/2;
+						if (iter->x<0) {
+							iter->width += iter->x;
+							iter->x = 0;
+						}
+						if ((iter->x+iter->width)>frame->width){
+							iter->width=frame->width-iter->x;
+						}
+						if (iter->y<0){
+							iter->height += iter->y;
+							iter->y = 0;
+						}
+						if ((iter->y+iter->height) > frame->height){
+							iter->height = frame->height - iter->y;
+						}
+#ifdef DEBUG
+						if (iter->height<0) cout << "-------------------height<0-------------------" <<endl;
+						if (iter->width<0) cout << "-------------------height<0-------------------" <<endl;
+						cout << iter->height << " " << iter->width << " " << iter->x << " " << iter->y << " "<< frame->width << " " << frame->height << endl;
+#endif
+
+					}
+					else if((iter->height > ((*j)->position).height && iter->width > ((*j)->position).width))
+					{
+						j = i->end();
+			/*			while(j--!=i->begin())
+						{
+							((*j)->position).height = iter->height;
+							((*j)->position).width = iter->width;
+							((*j)->position).x -= (iter->width - ((*j)->position).width)/2;
+							((*j)->position).y -= (iter->height - ((*j)->position).height)/2;
+							if (((*j)->position).x<0) ((*j)->position).x = 0;
+							if (((*j)->position).x+((*j)->position).width > frame->width) ((*j)->position).width = frame->width-((*j)->position).x;
+							if (((*j)->position).y<0) ((*j)->position).y = 0;
+							if (((*j)->position).y+((*j)->position).height > frame->height) ((*j)->position).height = frame->height - ((*j)->position).y;
+						}
+						j = i->begin();
+						//查找有没有轨迹和它能够连接上的
+						list<list<tube *> >::iterator k = database.begin();
+						//if (!database.empty()) k--;
+						for (;k != database.end(); k++) {
+							list<tube *>::iterator l = k->end();
+							if (i == k) continue;
+							if (!k->empty()) l--;
+							else break;
+							if (isSameObj((*j)->position, (*l)->position, category_factor)) {
+								while(!k->empty())
+								{
+									i->push_back(k->front());
+									k->pop_front();
+								}
+								k=database.erase(k);
+							}
+						}*/
+					}
+					i->push_back(new tube(*iter, frame_id / FPS, target));
+					added = true;
+					break;
+				}
+			}
+			if (!added) //扫描现有database未发现匹配项则新建跟踪目标链表
+				database.push_back(
+						list<tube *>(1,
+								new tube(*iter, frame_id / FPS, target)));
+			cvResetImageROI(frame);
+			cvReleaseImage(&target);
+		}
+		//The following 3 lines are for debuging, comment them when debug is done!
+		cvShowImage("frame", frame);
+		cvShowImage("fgImg", tmp);
+		cvWaitKey(1);
+		frame_id += 1;
+		rects.clear();
+		cvClearMemStorage(storage);
+	}
+
+
+
+	printf("Track DB has been saved! Total frame num:%d\tValid frame:%d\n",
+			frame_count, frame_id);
+	//ok!!!!!!!!!!!!!
+	if (save_mode) { //如果设置了保存模式，则将database中图像保存于“./DB”文件夹下
+//        if(access("./DB", 0) == 0)//判断是否存在文件夹“./DB”, 如果存在，先强制删除（避免原来有记录）
+//            system("rd /s /q DB");
+//        system("md DB");//创建文件夹“./DB"
+		int i = 0, j = 0;
+		char filename[50]; // "./DB/obj_iii_seq_jjjj_px%d_py%d_t%d.jpg"
+		for (list<list<tube *> >::iterator iter1 = database.begin();
+				iter1 != database.end(); iter1++, i++) {
+			j = 0;
+			for (list<tube *>::iterator iter2 = iter1->begin();
+					iter2 != iter1->end(); iter2++, j++) {
+				sprintf(filename, "./u/obj_%03d_seq_%04d_px%d_py%d_t%d.jpg", i,
+						j, (*iter2)->position.x, (*iter2)->position.y,
+						(*iter2)->t_sec);
+				cvSaveImage(filename, (*iter2)->target);
+				printf("File %s saved.\n", filename);
+			}
+		}
+	}
+	//释放内存
+	cvReleaseMemStorage(&storage);
+	cvReleaseImage(&tmp);
+	cvReleaseImage(&frame_gray);
+}
+
+/**
+ *融合跟踪数据库，输出视频摘要，同时释放Database内存
+ */
+void mergeDB(list<list<tube *> > & database, const char * videoFilePath,
+		const int fps, const CvSize size, const IplImage * bgImg) {
+	list<list<tube *> > database1;
+	if (database.empty()) {
+		printf("Fail: Database is empty, cannot merge!\n");
+		return;
+	}
+	if (videoFilePath == NULL) {
+		printf("Fail: NULL output file path/name!\n");
+		return;
+	}
+	CvVideoWriter * writer = cvCreateVideoWriter(videoFilePath,
+			CV_FOURCC('X', 'V', 'I', 'D'), FPS, size, 1);
+	if (writer == NULL) {
+		printf(
+				"Fail: Invalid video file path/name, cannot build a video writer!\n");
+		return;
+	}
+	IplImage * frame = cvCreateImage(size, IPL_DEPTH_8U, 3); //输出帧
+	tube * tmp = NULL; //临时tube指针
+	vector<CvRect> rects; //保存每帧被填充的位置
+	int frame_id = 0;
+	printf("Merging track database...\n");
+	int flag = 1;
+
+	while (!database.empty()) {
+		if (!bgImg->imageData)
+		{
+			cout << "bgImg为空" << endl;
+			continue;
+		}
+		if (!frame->imageData)
+		{
+			cout << "frame为空" << endl;
+			continue;
+		}
+		cvCopy(bgImg, frame); //每次开始用背景图片刷新输出帧
+//		cout << bgImg->imageSize << "   " << frame->imageSize << endl;
+		for (list<list<tube *> >::iterator i = database.begin();
+				i != database.end();) { //遍历级联链表每个子链表首项
+			if (i->empty()) {
+				i = database.erase(i);
+				continue;
+			}
+			bool canAdd = true;
+			tmp = *(i->begin());
+			for (size_t t = 0; t != rects.size(); t++) { //检查是否与已经填充的有重叠
+				if (isOverlap(rects[t], tmp->position)) {
+					canAdd = false;
+					break;
+				}
+			}
+			if (canAdd) { //如果可以加入则将tube写入输出帧
+				cvSetImageROI(frame, tmp->position);//确认位置
+				if (!tmp->target->imageData)
+				{
+					cout << "tmp->target is empty" << endl;
+					continue;
+				}
+
+				//打印坐标
+//				cout << tmp->target->width << " 111 "<< tmp->target->height << endl;
+//				cout << tmp->target->imageSize << "   " << frame->imageSize << endl;
+
+//				cvShowImage("tmp->target", tmp->target);
+//				cvWaitKey(0);
+
+				cvCopy(tmp->target, frame);//开始写入
+				//frame=cvCloneImage(tmp->target)
+				cout << tmp->target->imageSize << "   " << frame->imageSize << endl;
+				cvResetImageROI(frame);
+				rects.push_back(tmp->position); //将填充图块的位置保存
+				delete tmp; //释放tmp指向的tube的图像内存
+				i->pop_front();
+				i++;
+			} else
+				i++;
+		}
+		cvWriteFrame(writer, frame); //写帧
+		rects.clear(); //清空rects
+		printf("frame:%d written.\n", frame_id);
+		frame_id += 1;
+	}
+	printf("Database has been merged and written to file.\n");
+	//释放内存
+	cvReleaseImage(&frame);
+	cvReleaseVideoWriter(&writer);
+}
+/**
+ *释放Database内存函数 - 辅助
+ */
+void freeDB(list<list<tube *> > & database) {
+	for (list<list<tube *> >::iterator iter1 = database.begin();
+			iter1 != database.end(); iter1++)
+		for (list<tube *>::iterator iter2 = iter1->begin();
+				iter2 != iter1->end();) {
+			delete *iter2;
+			iter2 = (*iter1).erase(iter2);
+		}
+}
